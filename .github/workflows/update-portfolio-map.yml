@@ -135,13 +135,13 @@ jobs:
                   "count": len([s for s in sites if s["market"] == m])
               }
           
-          html = """<!DOCTYPE html>
+          html_start = """<!DOCTYPE html>
           <html><head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1">
           <title>Core5 Portfolio</title>
           <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-          <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+          <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>
           <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
           <meta http-equiv="Pragma" content="no-cache"/>
           <meta http-equiv="Expires" content="0"/>
@@ -149,21 +149,22 @@ jobs:
           body { margin: 0; padding: 0; font-family: Arial, sans-serif; }
           html, body, #map { width: 100%; height: 100%; }
           #map { background: #f5f5f5; }
-          .header { position: absolute; top: 12px; left: 12px; background: rgba(42,42,42,0.95); padding: 12px 14px; border-radius: 6px; border: 1px solid #404040; z-index: 1000; color: white; display: flex; gap: 14px; align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,0.5); }
+          .header { position: absolute; top: 12px; left: 12px; background: rgba(255,255,255,0.95); padding: 12px 14px; border-radius: 6px; border: 1px solid #ddd; z-index: 1000; color: #333; display: flex; gap: 14px; align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
           .header img { width: 48px; height: auto; }
-          .header-text h1 { margin: 0; font-size: 16px; color: #fff; font-weight: 700; }
-          .header-text .sub { margin: 2px 0 0; color: #999; font-size: 11px; }
+          .header-text h1 { margin: 0; font-size: 16px; color: #0a3355; font-weight: 700; }
+          .header-text .sub { margin: 2px 0 0; color: #666; font-size: 11px; }
           .btn { position: absolute; top: 12px; left: 320px; background: rgba(42,42,42,0.95); border: 1px solid #404040; color: #d2d0ce; padding: 8px 12px; border-radius: 6px; cursor: pointer; z-index: 1000; font-size: 12px; display: none; }
           .btn.show { display: block; }
-          .legend { position: absolute; bottom: 20px; left: 12px; background: rgba(42,42,42,0.95); padding: 12px 14px; border-radius: 6px; border: 1px solid #404040; z-index: 1000; font-size: 11px; display: none; }
+          .legend { position: absolute; bottom: 20px; left: 12px; background: rgba(255,255,255,0.95); padding: 12px 14px; border-radius: 6px; border: 1px solid #ddd; z-index: 1000; font-size: 11px; display: none; }
           .legend.show { display: block; }
-          .legend h3 { margin: 0 0 8px 0; font-size: 10px; color: #999; text-transform: uppercase; font-weight: 700; }
+          .legend h3 { margin: 0 0 8px 0; font-size: 10px; color: #666; text-transform: uppercase; font-weight: 700; }
           .legend-item { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
-          .legend-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid #2a2a2a; }
-          .legend-label { color: #d2d0ce; font-size: 11px; }
+          .legend-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid #fff; }
+          .legend-label { color: #333; font-size: 11px; }
           </style></head><body>
           <div id="map"></div>
           <div class="header">
+            <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAACXBIWXMAAA7DAAAOwwHHb6thAAABJklEQVRoge3ZwQnCQBBG4ZkELMASLMEGtARLsAUtQRu0BE7AEjyBHizoAXoCT+AJ9AT6BCZhFmZZ9u0mG/jgYWDhY+bNzO7tQhIkSZIkSZIk/Yv1+/1wOp2G4/H4d3w+n4fz+Xw4Ho8/9iuXy2EymQzb7fb/uVQqFWazWXi/32+C9/s9HAyHw+FyuYRhGAZhGIbhfD4P1+s1DMPg/X4P+/0+vN/v4XK5hPP5PNxutzAMQ7jf7+F0OoWPxyN8v99hGIbh4/GAw+EQXq/XcL/fwzAMw8vlEt7vd3i73cLlcgkfj0d4vV7h9/s9DMNwPB7DyWQCn88nfD6f4f1+h+PxGD6fjxiGYRiG4Xg8hsPhEI7HY/h8PsPH4xFOpxO8Xq/wfD7D/X4Pz+czHI/HcDqdwvV6Dd/vdzAMwzAMwzAMwzAMf/wCJ6IDTK7FQEAAAA" alt="Core5"/>
             <div class="header-text">
               <h1>Core5</h1>
               <div class="sub" id="subtitle">Midwest Development Portfolio</div>
@@ -175,7 +176,9 @@ jobs:
             <div id="legendbody"></div>
           </div>
           <script>
-          const SITES = """ + json.dumps(sites) + """;
+          const SITES = """
+          
+          html_data = html_start + json.dumps(sites) + """;
           const MARKETS = """ + json.dumps(markets) + """;
           const LEGEND = """ + json.dumps(legend) + """;
           const MARKET_CENTERS = """ + json.dumps(market_centers) + """;
@@ -210,8 +213,8 @@ jobs:
               fillOpacity: 0.85
             });
             
-            const tenantHTML = s.tenant ? `<div style="color:#B8860B;font-weight:600;margin-bottom:4px">${s.tenant}</div>` : "";
-            m.bindPopup(`<div style="color:#333;font-size:12px"><div style="font-weight:700;font-size:13px;color:#1F3864;margin-bottom:4px">${s.dev}</div>${tenantHTML}<div style="margin-bottom:6px;color:#666">${s.addr}</div><table style="font-size:11px;color:#333"><tr><td style="padding-right:12px">SF</td><td style="text-align:right;font-weight:600">${s.sf}</td></tr><tr><td style="padding-right:12px">Acres</td><td style="text-align:right;font-weight:600">${s.acres}</td></tr><tr><td style="padding-right:12px">Year</td><td style="text-align:right;font-weight:600">${s.year}</td></tr><tr><td style="padding-right:12px">Market</td><td style="text-align:right;font-weight:600">${s.market}</td></tr></table><div style="display:inline-block;margin-top:6px;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;color:#fff;background:${s.color}">${s.statusLabel}</div></div>`);
+            const tenantHTML = s.tenant ? `<div style="color:#d8272d;font-weight:600;margin-bottom:4px">${s.tenant}</div>` : "";
+            m.bindPopup(`<div style="color:#333;font-size:12px"><div style="font-weight:700;font-size:13px;color:#0a3355;margin-bottom:4px">${s.dev}</div>${tenantHTML}<div style="margin-bottom:6px;color:#666">${s.addr}</div><table style="font-size:11px;color:#333"><tr><td style="padding-right:12px">SF</td><td style="text-align:right;font-weight:600">${s.sf}</td></tr><tr><td style="padding-right:12px">Acres</td><td style="text-align:right;font-weight:600">${s.acres}</td></tr><tr><td style="padding-right:12px">Year</td><td style="text-align:right;font-weight:600">${s.year}</td></tr><tr><td style="padding-right:12px">Market</td><td style="text-align:right;font-weight:600">${s.market}</td></tr></table><div style="display:inline-block;margin-top:6px;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;color:#fff;background:${s.color}">${s.statusLabel}</div></div>`);
             m.bindTooltip(s.tenant ? `${s.dev} — ${s.tenant}` : s.dev, { direction: "top" });
             m.on("click", () => {
               const siteBounds = L.latLngBounds([[s.lat, s.lon]]);
@@ -241,7 +244,7 @@ jobs:
                 fillOpacity: 0.3
               });
               
-              circle.bindPopup(`<div style="color:#333"><div style="font-weight:700;color:#1F3864;font-size:13px">${market}</div><div style="color:#666;font-size:11px">${center.count} sites</div></div>`);
+              circle.bindPopup(`<div style="color:#333"><div style="font-weight:700;color:#0a3355;font-size:13px">${market}</div><div style="color:#666;font-size:11px">${center.count} sites</div></div>`);
               circle.on("click", () => { showDetail(market); });
               layer.addLayer(circle);
             });
@@ -253,7 +256,6 @@ jobs:
               setTimeout(() => {
                 initialZoom = map.getZoom();
                 initialCenter = map.getCenter();
-                console.log("Initial view captured - Zoom:", initialZoom, "Center:", initialCenter);
               }, 100);
             }, 50);
           }
@@ -285,12 +287,11 @@ jobs:
           document.getElementById("legendbody").innerHTML = legendHTML;
           
           showLanding();
-          console.log("Portfolio loaded");
           </script>
-          </body></html>""";
+          </body></html>"""
           
           with open('index.html', 'w') as f:
-              f.write(html)
+              f.write(html_data)
           print(f"✓ {len(sites)} sites | {len(skipped)} skipped | Markets: {markets}")
           EOF
           python3 build_map.py
