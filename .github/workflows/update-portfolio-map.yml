@@ -10,291 +10,129 @@ jobs:
   update-map:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - run: pip install openpyxl
+
+      - name: Generate map
         run: |
-          python -m pip install openpyxl
+          python3 - << 'PYTHON_EOF'
+          import openpyxl, json, re
+          from collections import Counter
+          
+          wb = openpyxl.load_workbook('Book1.xlsx')
+          ws = wb.active
+          
+          headers = []
+          data_rows = []
+          for row_idx, row in enumerate(ws.iter_rows(min_row=1, values_only=True), 1):
+              if row_idx == 1:
+                  headers = [str(h).strip() if h else f"Col{i}" for i, h in enumerate(row, 1)]
+              else:
+                  data_rows.append(dict(zip(headers, row)))
+          
+          def status_bucket(status):
+              s = (status or "").lower()
+              if "sold" in s: return "sold"
+              if "stabilized" in s: return "stabilized"
+              if "own" in s: return "active"
+              return "other"
+          
+          BUCKET_META = {
+              "sold": {"label": "Sold", "color": "#9AA0A6"},
+              "active": {"label": "Own - Land / Under Dev / Leasing", "color": "#F2C230"},
+              "stabilized": {"label": "Own - Stabilized", "color": "#2E9E5B"},
+              "other": {"label": "Other / Unknown", "color": "#C0C0C0"},
+          }
+          
+          NOT_TENANT = re.compile(r"^(north|south|east|west|northern|southern|building\s*\d+|bldg\s*\d+|b\d+|phase\s*\w+|lot\s*\w+|land\s*estate|north\s+land\s+estate|south\s+land\s+estate|[ivx]+|\d+)$", re.I)
+          
+          def split_name(raw):
+              name = (raw or "").strip()
+              if " - " in name:
+                  parts = [p.strip() for p in name.split(" - ")]
+              elif "-" in name:
+                  parts = [p.strip() for p in name.split("-")]
+              else:
+                  return name, None
+              if len(parts) < 2:
+                  return name, None
+              tail = parts[-1]
+              head = " - ".join(parts[:-1])
+              tail_clean = re.sub(r"^land\s+sale\s+", "", tail, flags=re.I).strip()
+              if NOT_TENANT.match(tail_clean) or not tail_clean:
+                  return name, None
+              return head, tail_clean
+          
+          def num(v):
+              if v is None: return None
+              s = str(v).strip().replace(",", "").replace("$", "")
+              if s in ("", "0", "null", "N/A", "NA", "-"): return None
+              try: return float(s) if float(s) != 0 else None
+              except: return None
+          
+          def fmt_int(v):
+              n = num(v)
+              return f"{n:,.0f}" if n is not None else "—"
+          
+          def fmt_acres(v):
+              n = num(v)
+              return f"{n:,.2f}".rstrip("0").rstrip(".") if n is not None else "—"
+          
+          def fmt_year(v):
+              n = num(v)
+              return str(int(n)) if n else "—"
+          
+          sites, skipped = [], []
+          for r in data_rows:
+              lat = num(r.get("Latitude"))
+              lon = num(r.get("Longitude"))
+              raw_name = (r.get("Development Name") or "").strip()
+              if lat is None or lon is None:
+                  if raw_name: skipped.append(raw_name)
+                  continue
+              dev, tenant = split_name(raw_name)
+              addr_parts = [
+                  " ".join(x for x in [str(r.get("Street Number") or "").strip(), (r.get("Street Name") or "").strip()] if x).strip(),
+                  (r.get("City") or "").strip(),
+                  (r.get("State") or "").strip(),
+                  (r.get("Zip") or "").strip(),
+              ]
+              address = ", ".join(p for p in addr_parts[:2] if p)
+              tail = " ".join(p for p in addr_parts[2:] if p)
+              if tail:
+                  address = f"{address} {tail}".strip(", ").strip()
+              bucket = status_bucket(r.get("Status"))
+              sites.append({
+                  "dev": dev, "tenant": tenant, "addr": address,
+                  "county": (r.get("County") or "").strip(),
+                  "market": (r.get("Market") or "").strip() or "N/A",
+                  "status": (r.get("Status") or "").strip(),
+                  "statusLabel": re.sub(r"^(\(\w+\))\s*", "", (r.get("Status") or "").strip()) or "Unknown",
+                  "bucket": bucket, "color": BUCKET_META[bucket]["color"],
+                  "sf": fmt_int(r.get("Building SF")),
+                  "acres": fmt_acres(r.get("Acres")),
+                  "year": fmt_year(r.get("Year Completed")),
+                  "lat": lat, "lon": lon,
+              })
+          
+          markets = sorted({s["market"] for s in sites})
+          legend = [{"key": k, **v} for k, v in BUCKET_META.items() if any(s["bucket"] == k for s in sites)]
+          
+          html = '''<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Core5 Portfolio Map</title><link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><style>html,body{margin:0;padding:0;height:100%;font-family:Arial,sans-serif}#wrap{position:relative;height:100vh}#map{height:100%}.panel{position:absolute;z-index:1000;background:#fff;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.18);padding:12px 14px;font-size:13px}#title{top:14px;left:14px}#title h1{margin:0 0 2px;font-size:17px;color:#1F3864}#legend{bottom:22px;left:14px}#filters{top:14px;right:14px;max-height:78vh;overflow:auto}#legend h2,#filters h2{margin:0 0 8px;font-size:11px;text-transform:uppercase;color:#555;font-weight:700}.lg{display:flex;align-items:center;gap:8px;margin:5px 0;cursor:pointer}.lg .dot{width:13px;height:13px;border-radius:50%;border:2px solid #fff;flex:none}.lg.off{opacity:.35}.pp-dev{font-weight:700;color:#1F3864}.pp-ten{color:#B8860B;font-weight:600}.pp-st{display:inline-block;margin-top:7px;padding:2px 8px;border-radius:10px;font-size:10.5px;font-weight:700;color:#fff}</style></head><body><div id="wrap"><div id="map"></div><div class="panel" id="title"><h1>Portfolio</h1><div class="sub"><span id="shown">0</span>/<span id="total">0</span></div></div><div class="panel" id="legend"><h2>Status</h2><div id="lgbody"></div></div><div class="panel" id="filters"><h2>Market</h2><div id="mkbody"></div><div style="margin-top:9px"><button id="ball">All</button> <button id="bnone">None</button></div></div></div><script>const SITES=''' + json.dumps(sites) + ''',MARKETS=''' + json.dumps(markets) + ''',LEGEND=''' + json.dumps(legend) + ''';const map=L.map("map");L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",{attribution:"© OSM © CARTO",maxZoom:19}).addTo(map);const onB={},onM={};LEGEND.forEach(l=>onB[l.key]=true);MARKETS.forEach(m=>onM[m]=true);const markers=SITES.map(s=>{const m=L.circleMarker([s.lat,s.lon],{radius:8,fillColor:s.color,color:"#fff",weight:2,opacity:1,fillOpacity:.92});const t=s.tenant?"<div class=pp-ten>"+s.tenant+"</div>":"";m.bindPopup("<div class=pp-dev>"+s.dev+"</div>"+t+"<div>"+s.addr+(s.county?"<br>"+s.county:"")+"</div><table><tr><td>SF</td><td>"+s.sf+"</td></tr><tr><td>Acres</td><td>"+s.acres+"</td></tr><tr><td>Year</td><td>"+s.year+"</td></tr><tr><td>Market</td><td>"+s.market+"</td></tr></table><span class=pp-st style=background:"+s.color+">"+s.statusLabel+"</span>");m.bindTooltip(s.tenant?s.dev+" — "+s.tenant:s.dev);m._s=s;return m});const layer=L.layerGroup().addTo(map);function refresh(){layer.clearLayers();let n=0,pts=[];markers.forEach(m=>{if(onB[m._s.bucket]&&onM[m._s.market]){layer.addLayer(m);n++;pts.push([m._s.lat,m._s.lon])}});document.getElementById("shown").textContent=n;if(pts.length)map.fitBounds(L.latLngBounds(pts).pad(.14));document.querySelectorAll(".lg").forEach(e=>e.classList.toggle("off",!onB[e.dataset.k]))}document.getElementById("total").textContent=SITES.length;document.getElementById("lgbody").innerHTML=LEGEND.map(l=>{const c=SITES.filter(s=>s.bucket===l.key).length;return\'<div class="lg" data-k="\'+l.key+\'"><span class="dot" style="background:\'+l.color+\'"></span><span>\'+l.label+\'</span><span class="ct">\'+c+\'</span></div>\'}).join("");document.querySelectorAll(".lg").forEach(e=>e.onclick=()=>{onB[e.dataset.k]=!onB[e.dataset.k];refresh()});document.getElementById("mkbody").innerHTML=MARKETS.map(m=>{const c=SITES.filter(s=>s.market===m).length;return\'<label><input type=checkbox data-m="\'+m+\'" checked> \'+m+\' <span class=ct>\'+c+\'</span></label>\'}).join("");document.querySelectorAll("#mkbody input").forEach(cb=>cb.onchange=()=>{onM[cb.dataset.m]=cb.checked;refresh()});document.getElementById("ball").onclick=()=>{MARKETS.forEach(m=>onM[m]=true);document.querySelectorAll("#mkbody input").forEach(c=>c.checked=true);refresh()};document.getElementById("bnone").onclick=()=>{MARKETS.forEach(m=>onM[m]=false);document.querySelectorAll("#mkbody input").forEach(c=>c.checked=false);refresh()};refresh()</script></body></html>'''
+          
+          with open('index.html', 'w') as f:
+              f.write(html)
+          print(f"✓ {len(sites)} sites | {len(skipped)} skipped | {dict(Counter(s['bucket'] for s in sites))}")
+          PYTHON_EOF
 
-      - name: Generate portfolio map
-        run: python3 << 'PYTHON_EOF'
-import openpyxl
-import json
-import re
-import sys
-from collections import Counter
-from datetime import datetime
-
-wb = openpyxl.load_workbook('Book1.xlsx')
-ws = wb.active
-
-headers = []
-data_rows = []
-
-for row_idx, row in enumerate(ws.iter_rows(min_row=1, values_only=True), 1):
-    if row_idx == 1:
-        headers = [str(h).strip() if h else f"Col{i}" for i, h in enumerate(row, 1)]
-    else:
-        data_rows.append(dict(zip(headers, row)))
-
-def status_bucket(status):
-    s = (status or "").lower()
-    if "sold" in s:
-        return "sold"
-    if "stabilized" in s:
-        return "stabilized"
-    if "own" in s:
-        return "active"
-    return "other"
-
-BUCKET_META = {
-    "sold": {"label": "Sold", "color": "#9AA0A6"},
-    "active": {"label": "Own - Land / Under Dev / Leasing", "color": "#F2C230"},
-    "stabilized": {"label": "Own - Stabilized", "color": "#2E9E5B"},
-    "other": {"label": "Other / Unknown", "color": "#C0C0C0"},
-}
-
-NOT_TENANT = re.compile(
-    r"^(north|south|east|west|northern|southern|"
-    r"building\s*\d+|bldg\s*\d+|b\d+|phase\s*\w+|lot\s*\w+|"
-    r"land\s*estate|north\s+land\s+estate|south\s+land\s+estate|"
-    r"[ivx]+|\d+)$",
-    re.I,
-)
-
-def split_name(raw):
-    name = (raw or "").strip()
-    if " - " in name:
-        parts = [p.strip() for p in name.split(" - ")]
-    elif "-" in name:
-        parts = [p.strip() for p in name.split("-")]
-    else:
-        return name, None
-    
-    if len(parts) < 2:
-        return name, None
-    
-    tail = parts[-1]
-    head = " - ".join(parts[:-1])
-    tail_clean = re.sub(r"^land\s+sale\s+", "", tail, flags=re.I).strip()
-    
-    if NOT_TENANT.match(tail_clean):
-        return name, None
-    if not tail_clean:
-        return name, None
-    return head, tail_clean
-
-def num(v):
-    if v is None:
-        return None
-    s = str(v).strip().replace(",", "").replace("$", "")
-    if s in ("", "0", "null", "N/A", "NA", "-"):
-        return None
-    try:
-        f = float(s)
-    except ValueError:
-        return None
-    return f if f != 0 else None
-
-def fmt_int(v):
-    n = num(v)
-    return f"{n:,.0f}" if n is not None else "—"
-
-def fmt_acres(v):
-    n = num(v)
-    if n is not None:
-        return f"{n:,.2f}".rstrip("0").rstrip(".")
-    return "—"
-
-def fmt_year(v):
-    n = num(v)
-    return str(int(n)) if n else "—"
-
-sites = []
-skipped = []
-
-for r in data_rows:
-    lat = num(r.get("Latitude"))
-    lon = num(r.get("Longitude"))
-    raw_name = (r.get("Development Name") or "").strip()
-    
-    if lat is None or lon is None:
-        if raw_name:
-            skipped.append(raw_name)
-        continue
-    
-    dev, tenant = split_name(raw_name)
-    
-    addr_parts = [
-        " ".join(x for x in [str(r.get("Street Number") or "").strip(),
-                             (r.get("Street Name") or "").strip()] if x).strip(),
-        (r.get("City") or "").strip(),
-        (r.get("State") or "").strip(),
-        (r.get("Zip") or "").strip(),
-    ]
-    
-    address = ", ".join(p for p in addr_parts[:2] if p)
-    tail = " ".join(p for p in addr_parts[2:] if p)
-    if tail:
-        address = f"{address} {tail}".strip(", ").strip()
-    
-    bucket = status_bucket(r.get("Status"))
-    
-    sites.append({
-        "dev": dev,
-        "tenant": tenant,
-        "addr": address,
-        "county": (r.get("County") or "").strip(),
-        "market": (r.get("Market") or "").strip() or "N/A",
-        "status": (r.get("Status") or "").strip(),
-        "statusLabel": re.sub(r"^(\(\w+\))\s*", "", (r.get("Status") or "").strip()) or "Unknown",
-        "bucket": bucket,
-        "color": BUCKET_META[bucket]["color"],
-        "sf": fmt_int(r.get("Building SF")),
-        "acres": fmt_acres(r.get("Acres")),
-        "year": fmt_year(r.get("Year Completed")),
-        "lat": lat,
-        "lon": lon,
-    })
-
-markets = sorted({s["market"] for s in sites})
-legend = [{"key": k, **v} for k, v in BUCKET_META.items()
-          if any(s["bucket"] == k for s in sites)]
-
-html_template = r'''<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Core5 Development Portfolio Map</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<style>
-  html,body{margin:0;padding:0;height:100%;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;}
-  #wrap{position:relative;height:100vh;width:100%;}
-  #map{height:100%;width:100%;background:#eef1f4;}
-  .panel{position:absolute;z-index:1000;background:#fff;border-radius:8px;
-    box-shadow:0 2px 12px rgba(0,0,0,.18);padding:12px 14px;font-size:13px;}
-  #title{top:14px;left:14px;max-width:330px;}
-  #title h1{margin:0 0 2px;font-size:17px;color:#1F3864;letter-spacing:.2px;}
-  #title .sub{color:#666;font-size:11.5px;}
-  #legend{bottom:22px;left:14px;}
-  #legend h2,#filters h2{margin:0 0 8px;font-size:11px;text-transform:uppercase;
-    letter-spacing:.7px;color:#555;font-weight:700;}
-  .lg{display:flex;align-items:center;gap:8px;margin:5px 0;cursor:pointer;user-select:none;}
-  .lg .dot{width:13px;height:13px;border-radius:50%;border:2px solid #fff;
-    box-shadow:0 0 0 1.2px rgba(0,0,0,.35);flex:none;}
-  .lg.off{opacity:.35;}
-  .lg .ct{color:#888;font-size:11px;margin-left:auto;padding-left:10px;}
-  #filters{top:14px;right:14px;max-height:78vh;overflow:auto;min-width:132px;}
-  #filters label{display:flex;align-items:center;gap:7px;margin:4px 0;cursor:pointer;}
-  #filters input{cursor:pointer;}
-  .btnrow{display:flex;gap:6px;margin-top:9px;}
-  .btnrow button{flex:1;font-size:11px;padding:4px 6px;border:1px solid #ccc;
-    background:#f7f7f7;border-radius:4px;cursor:pointer;}
-  .btnrow button:hover{background:#ececec;}
-  .leaflet-popup-content{margin:11px 13px;font-size:12.5px;line-height:1.45;min-width:212px;}
-  .pp-dev{font-weight:700;font-size:13.5px;color:#1F3864;}
-  .pp-ten{color:#B8860B;font-weight:600;font-size:12px;margin-top:1px;}
-  .pp-addr{color:#666;font-size:11.5px;margin:5px 0 7px;}
-  .pp-tbl{width:100%;border-collapse:collapse;}
-  .pp-tbl td{padding:2px 0;font-size:11.5px;}
-  .pp-tbl td:first-child{color:#777;padding-right:12px;white-space:nowrap;}
-  .pp-tbl td:last-child{text-align:right;font-weight:600;}
-  .pp-st{display:inline-block;margin-top:7px;padding:2px 8px;border-radius:10px;
-    font-size:10.5px;font-weight:700;color:#fff;}
-</style></head><body>
-<div id="wrap">
-  <div id="map"></div>
-  <div class="panel" id="title">
-    <h1>Development Portfolio</h1>
-    <div class="sub"><span id="shown">0</span> of <span id="total">0</span> sites shown</div>
-  </div>
-  <div class="panel" id="legend"><h2>Status</h2><div id="lgbody"></div></div>
-  <div class="panel" id="filters"><h2>Market</h2><div id="mkbody"></div>
-    <div class="btnrow"><button id="ball">All</button><button id="bnone">None</button></div>
-  </div>
-</div>
-<script>
-const SITES=__SITES__, MARKETS=__MARKETS__, LEGEND=__LEGEND__;
-const map=L.map('map',{zoomControl:true,scrollWheelZoom:true});
-L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
- {attribution:'&copy; OpenStreetMap &copy; CARTO',maxZoom:19}).addTo(map);
-
-const onB={},onM={};
-LEGEND.forEach(l=>onB[l.key]=true);
-MARKETS.forEach(m=>onM[m]=true);
-
-const markers=SITES.map(s=>{
-  const m=L.circleMarker([s.lat,s.lon],{radius:8,fillColor:s.color,color:'#fff',
-    weight:2,opacity:1,fillOpacity:.92});
-  const t=s.tenant?'<div class="pp-ten">'+s.tenant+'</div>':'';
-  m.bindPopup('<div class="pp-dev">'+s.dev+'</div>'+t+
-    '<div class="pp-addr">'+s.addr+(s.county?'<br>'+s.county:'')+'</div>'+
-    '<table class="pp-tbl">'+
-    '<tr><td>Building SF</td><td>'+s.sf+'</td></tr>'+
-    '<tr><td>Acres</td><td>'+s.acres+'</td></tr>'+
-    '<tr><td>Year</td><td>'+s.year+'</td></tr>'+
-    '<tr><td>Market</td><td>'+s.market+'</td></tr>'+
-    '</table>'+
-    '<span class="pp-st" style="background:'+s.color+'">'+s.statusLabel+'</span>');
-  m.bindTooltip(s.tenant?s.dev+' — '+s.tenant:s.dev,{direction:'top',offset:[0,-8]});
-  m._s=s; return m;
-});
-
-const layer=L.layerGroup().addTo(map);
-function refresh(){
-  layer.clearLayers();
-  let n=0, pts=[];
-  markers.forEach(m=>{
-    if(onB[m._s.bucket] && onM[m._s.market]){layer.addLayer(m);n++;pts.push([m._s.lat,m._s.lon]);}
-  });
-  document.getElementById('shown').textContent=n;
-  if(pts.length) map.fitBounds(L.latLngBounds(pts).pad(.14));
-  document.querySelectorAll('.lg').forEach(e=>e.classList.toggle('off',!onB[e.dataset.k]));
-}
-document.getElementById('total').textContent=SITES.length;
-
-document.getElementById('lgbody').innerHTML=LEGEND.map(l=>{
-  const c=SITES.filter(s=>s.bucket===l.key).length;
-  return '<div class="lg" data-k="'+l.key+'"><span class="dot" style="background:'+l.color+'"></span>'+
-    '<span>'+l.label+'</span><span class="ct">'+c+'</span></div>';}).join('');
-document.querySelectorAll('.lg').forEach(e=>e.onclick=()=>{onB[e.dataset.k]=!onB[e.dataset.k];refresh();});
-
-document.getElementById('mkbody').innerHTML=MARKETS.map(m=>{
-  const c=SITES.filter(s=>s.market===m).length;
-  return '<label><input type="checkbox" data-m="'+m+'" checked>'+
-    '<span>'+m+'</span><span class="ct" style="margin-left:auto;color:#888;font-size:11px">'+c+'</span></label>';}).join('');
-document.querySelectorAll('#mkbody input').forEach(cb=>cb.onchange=()=>{onM[cb.dataset.m]=cb.checked;refresh();});
-document.getElementById('ball').onclick=()=>{MARKETS.forEach(m=>onM[m]=true);
-  document.querySelectorAll('#mkbody input').forEach(c=>c.checked=true);refresh();};
-document.getElementById('bnone').onclick=()=>{MARKETS.forEach(m=>onM[m]=false);
-  document.querySelectorAll('#mkbody input').forEach(c=>c.checked=false);refresh();};
-refresh();
-</script></body></html>'''
-
-html = html_template.replace('__SITES__', json.dumps(sites))
-html = html.replace('__MARKETS__', json.dumps(markets))
-html = html.replace('__LEGEND__', json.dumps(legend))
-
-with open('index.html', 'w', encoding='utf-8') as f:
-    f.write(html)
-
-print(f"✓ Sites plotted: {len(sites)}")
-print(f"✓ Skipped (no geo): {len(skipped)}")
-print(f"✓ Markets: {markets}")
-print(f"✓ Buckets: {dict(Counter(s['bucket'] for s in sites))}")
-print(f"✓ Tenants: {sum(1 for s in sites if s['tenant'])} of {len(sites)}")
-PYTHON_EOF
-
-      - name: Commit and push
-        run: |
-          git config user.name "Portfolio Map Bot"
-          git config user.email "bot@portfolio-map.local"
+      - run: |
+          git config user.name "Portfolio Bot"
+          git config user.email "bot@portfolio.local"
           git add index.html
-          git commit -m "Update portfolio map from Excel - $(date +%Y-%m-%d\ %H:%M:%S)" || echo "No changes"
-          git push https://${{ secrets.PORTFOLIO_MAP_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main || echo "Push failed"
+          git commit -m "Auto-update map $(date +%Y-%m-%d)" || true
+          git push https://${{ secrets.PORTFOLIO_MAP_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
