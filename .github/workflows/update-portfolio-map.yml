@@ -89,9 +89,9 @@ jobs:
           
           sites, skipped = [], []
           for r in data_rows:
-              lat = num(r.get("Latitude"))
-              lon = num(r.get("Longitude"))
-              raw_name = (r.get("Development Name") or "").strip()
+              lat = num(r.get("Address Lat"))
+              lon = num(r.get("Address Long"))
+              raw_name = (r.get("Name") or "").strip()
               if lat is None or lon is None:
                   if raw_name: skipped.append(raw_name)
                   continue
@@ -100,23 +100,23 @@ jobs:
                   " ".join(x for x in [str(r.get("Street Number") or "").strip(), (r.get("Street Name") or "").strip()] if x).strip(),
                   (r.get("City") or "").strip(),
                   (r.get("State") or "").strip(),
-                  (r.get("Zip") or "").strip(),
+                  (r.get("Zip Code") or "").strip(),
               ]
               address = ", ".join(p for p in addr_parts[:2] if p)
               tail = " ".join(p for p in addr_parts[2:] if p)
               if tail:
                   address = f"{address} {tail}".strip(", ").strip()
-              bucket = status_bucket(r.get("Status"))
+              bucket = status_bucket(r.get("Property Status"))
               sites.append({
                   "dev": dev, "tenant": tenant, "addr": address,
                   "county": (r.get("County") or "").strip(),
-                  "market": (r.get("Market") or "").strip() or "N/A",
-                  "status": (r.get("Status") or "").strip(),
-                  "statusLabel": re.sub(r"^(\(\w+\))\s*", "", (r.get("Status") or "").strip()) or "Unknown",
+                  "market": (r.get("REGION") or "").strip() or "N/A",
+                  "status": (r.get("Property Status") or "").strip(),
+                  "statusLabel": re.sub(r"^(\(\w+\))\s*", "", (r.get("Property Status") or "").strip()) or "Unknown",
                   "bucket": bucket, "color": BUCKET_META[bucket]["color"],
-                  "sf": fmt_int(r.get("Building SF")),
-                  "acres": fmt_acres(r.get("Acres")),
-                  "year": fmt_year(r.get("Year Completed")),
+                  "sf": fmt_int(r.get("Square Feet")),
+                  "acres": fmt_acres(r.get("Lot Size")),
+                  "year": fmt_year(r.get("Year Built")),
                   "lat": lat, "lon": lon,
               })
           
