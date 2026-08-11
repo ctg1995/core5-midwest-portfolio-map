@@ -1,4 +1,23 @@
-- name: Generate map
+name: Update Portfolio Map
+
+on:
+  push:
+    paths:
+      - 'Book1.xlsx'
+  workflow_dispatch:
+
+jobs:
+  update-map:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: pip install openpyxl
+      - name: Generate map
         run: |
           cat > build_map.py << 'EOF'
           import openpyxl, json, re
@@ -110,3 +129,11 @@
           print(f"✓ {len(sites)} sites | {len(skipped)} skipped | {dict(Counter(s['bucket'] for s in sites))}")
           EOF
           python3 build_map.py
+      
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git commit -m "Auto-update map" || true
+          git push
