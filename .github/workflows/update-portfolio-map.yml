@@ -1,9 +1,6 @@
 name: Update Portfolio Map
 
 on:
-  push:
-    paths:
-      - 'Book1.xlsx'
   workflow_dispatch:
 
 jobs:
