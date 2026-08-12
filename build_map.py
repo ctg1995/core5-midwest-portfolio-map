@@ -1,0 +1,268 @@
+import openpyxl, json, re
+from collections import defaultdict
+
+wb = openpyxl.load_workbook('Book1.xlsx')
+ws = wb.active
+
+headers = []
+data_rows = []
+for row_idx, row in enumerate(ws.iter_rows(min_row=1, values_only=True), 1):
+    if row_idx == 1:
+        headers = [str(h).strip() if h else f"Col{i}" for i, h in enumerate(row, 1)]
+    else:
+        data_rows.append(dict(zip(headers, row)))
+
+def status_bucket(status):
+    s = (status or "").lower()
+    if "sold" in s: return "sold"
+    if "stabilized" in s: return "stabilized"
+    if "own" in s: return "active"
+    return "other"
+
+BUCKET_META = {
+    "sold": {"label": "Sold", "color": "#9AA0A6"},
+    "active": {"label": "Own - Land / Under Dev / Leasing", "color": "#F2C230"},
+    "stabilized": {"label": "Own - Stabilized", "color": "#2E9E5B"},
+    "other": {"label": "Other / Unknown", "color": "#C0C0C0"},
+}
+
+NOT_TENANT = re.compile(r"^(north|south|east|west|northern|southern|building\s*\d+|bldg\s*\d+|b\d+|phase\s*\w+|lot\s*\w+|land\s*estate|north\s+land\s+estate|south\s+land\s+estate|[ivx]+|\d+)$", re.I)
+
+def split_name(raw):
+    name = (raw or "").strip()
+    if " - " in name:
+        parts = [p.strip() for p in name.split(" - ")]
+    elif "-" in name:
+        parts = [p.strip() for p in name.split("-")]
+    else:
+        return name, None
+    if len(parts) < 2:
+        return name, None
+    tail = parts[-1]
+    head = " - ".join(parts[:-1])
+    tail_clean = re.sub(r"^land\s+sale\s+", "", tail, flags=re.I).strip()
+    if NOT_TENANT.match(tail_clean) or not tail_clean:
+        return name, None
+    return head, tail_clean
+
+def num(v):
+    if v is None: return None
+    s = str(v).strip().replace(",", "").replace("$", "")
+    if s in ("", "0", "null", "N/A", "NA", "-"): return None
+    try: return float(s) if float(s) != 0 else None
+    except: return None
+
+def fmt_int(v):
+    n = num(v)
+    return f"{n:,.0f}" if n is not None else "—"
+
+def fmt_acres(v):
+    n = num(v)
+    return f"{n:,.2f}".rstrip("0").rstrip(".") if n is not None else "—"
+
+def fmt_year(v):
+    n = num(v)
+    return str(int(n)) if n else "—"
+
+sites, skipped = [], []
+for r in data_rows:
+    lat = num(r.get("Address Lat"))
+    lon = num(r.get("Address Long"))
+    raw_name = (r.get("Name") or "").strip()
+    if lat is None or lon is None:
+        if raw_name: skipped.append(raw_name)
+        continue
+    dev, tenant = split_name(raw_name)
+    addr_parts = [
+        " ".join(x for x in [str(r.get("Street Number") or "").strip(), (r.get("Street Name") or "").strip()] if x).strip(),
+        (r.get("City") or "").strip(),
+        (r.get("State") or "").strip(),
+        (r.get("Zip Code") or "").strip(),
+    ]
+    address = ", ".join(p for p in addr_parts[:2] if p)
+    tail = " ".join(p for p in addr_parts[2:] if p)
+    if tail:
+        address = f"{address} {tail}".strip(", ").strip()
+    bucket = status_bucket(r.get("Property Status"))
+    sites.append({
+        "dev": dev, "tenant": tenant, "addr": address,
+        "county": (r.get("County") or "").strip(),
+        "market": (r.get("REGION") or "").strip() or "N/A",
+        "status": (r.get("Property Status") or "").strip(),
+        "statusLabel": re.sub(r"^(\(\w+\))\s*", "", (r.get("Property Status") or "").strip()) or "Unknown",
+        "bucket": bucket, "color": BUCKET_META[bucket]["color"],
+        "sf": fmt_int(r.get("Square Feet")),
+        "acres": fmt_acres(r.get("Lot Size")),
+        "year": fmt_year(r.get("Year Built")),
+        "lat": lat, "lon": lon,
+    })
+
+markets = sorted({s["market"] for s in sites})
+legend = [{"key": k, **v} for k, v in BUCKET_META.items() if any(s["bucket"] == k for s in sites)]
+
+market_bounds = defaultdict(lambda: {"min_lat": 90, "max_lat": -90, "min_lon": 180, "max_lon": -180})
+for s in sites:
+    m = s["market"]
+    market_bounds[m]["min_lat"] = min(market_bounds[m]["min_lat"], s["lat"])
+    market_bounds[m]["max_lat"] = max(market_bounds[m]["max_lat"], s["lat"])
+    market_bounds[m]["min_lon"] = min(market_bounds[m]["min_lon"], s["lon"])
+    market_bounds[m]["max_lon"] = max(market_bounds[m]["max_lon"], s["lon"])
+
+market_centers = {}
+for m, bounds in market_bounds.items():
+    market_centers[m] = {
+        "lat": (bounds["min_lat"] + bounds["max_lat"]) / 2,
+        "lon": (bounds["min_lon"] + bounds["max_lon"]) / 2,
+        "count": len([s for s in sites if s["market"] == m])
+    }
+
+sites_json = json.dumps(sites)
+markets_json = json.dumps(markets)
+legend_json = json.dumps(legend)
+market_centers_json = json.dumps(market_centers)
+
+html = """<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Core5 Portfolio</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
+<meta http-equiv="Pragma" content="no-cache"/>
+<meta http-equiv="Expires" content="0"/>
+<style>
+body { margin: 0; padding: 0; font-family: Arial, sans-serif; }
+html, body, #map { width: 100%; height: 100%; }
+#map { background: #f5f5f5; }
+.header { position: absolute; top: 12px; left: 12px; background: rgba(255,255,255,0.95); padding: 12px 14px; border-radius: 6px; border: 1px solid #ddd; z-index: 1000; color: #333; display: flex; gap: 14px; align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+.header-text h1 { margin: 0; font-size: 16px; color: #0a3355; font-weight: 700; }
+.header-text .sub { margin: 2px 0 0; color: #666; font-size: 11px; }
+.btn { position: absolute; top: 12px; left: 320px; background: rgba(42,42,42,0.95); border: 1px solid #404040; color: #d2d0ce; padding: 8px 12px; border-radius: 6px; cursor: pointer; z-index: 1000; font-size: 12px; display: none; }
+.btn.show { display: block; }
+.legend { position: absolute; bottom: 20px; left: 12px; background: rgba(255,255,255,0.95); padding: 12px 14px; border-radius: 6px; border: 1px solid #ddd; z-index: 1000; font-size: 11px; display: none; }
+.legend.show { display: block; }
+.legend h3 { margin: 0 0 8px 0; font-size: 10px; color: #666; text-transform: uppercase; font-weight: 700; }
+.legend-item { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.legend-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid #fff; }
+.legend-label { color: #333; font-size: 11px; }
+</style></head><body>
+<div id="map"></div>
+<div class="header">
+  <div class="header-text">
+    <h1>Core5</h1>
+    <div class="sub" id="subtitle">Midwest Development Portfolio</div>
+  </div>
+</div>
+<button class="btn" id="backbtn">← Back to Portfolio</button>
+<div class="legend" id="legend">
+  <h3>Status</h3>
+  <div id="legendbody"></div>
+</div>
+<script>
+const SITES = """ + sites_json + """;
+const MARKETS = """ + markets_json + """;
+const LEGEND = """ + legend_json + """;
+const MARKET_CENTERS = """ + market_centers_json + """;
+
+const map = L.map("map").setView([38, -86], 6);
+let initialZoom = 6;
+let initialCenter = [38, -86];
+
+L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+  attribution: "© Esri",
+  maxZoom: 18
+}).addTo(map);
+
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  attribution: "© OpenStreetMap",
+  opacity: 0.6,
+  maxZoom: 19
+}).addTo(map);
+
+const layer = L.layerGroup().addTo(map);
+const pins = [];
+
+SITES.forEach(s => {
+  const m = L.circleMarker([s.lat, s.lon], {
+    radius: 7,
+    fillColor: s.color,
+    color: "#fff",
+    weight: 2,
+    opacity: 1,
+    fillOpacity: 0.85
+  });
+  
+  const tenantHTML = s.tenant ? `<div style="color:#d8272d;font-weight:600;margin-bottom:4px">${s.tenant}</div>` : "";
+  m.bindPopup(`<div style="color:#333;font-size:12px"><div style="font-weight:700;font-size:13px;color:#0a3355;margin-bottom:4px">${s.dev}</div>${tenantHTML}<div style="margin-bottom:6px;color:#666">${s.addr}</div><table style="font-size:11px;color:#333"><tr><td style="padding-right:12px">SF</td><td style="text-align:right;font-weight:600">${s.sf}</td></tr><tr><td style="padding-right:12px">Acres</td><td style="text-align:right;font-weight:600">${s.acres}</td></tr><tr><td style="padding-right:12px">Year</td><td style="text-align:right;font-weight:600">${s.year}</td></tr><tr><td style="padding-right:12px">Market</td><td style="text-align:right;font-weight:600">${s.market}</td></tr></table><div style="display:inline-block;margin-top:6px;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;color:#fff;background:${s.color}">${s.statusLabel}</div></div>`);
+  m.bindTooltip(s.tenant ? `${s.dev} — ${s.tenant}` : s.dev, { direction: "top" });
+  m.on("click", () => {
+    const siteBounds = L.latLngBounds([[s.lat, s.lon]]);
+    map.fitBounds(siteBounds, { padding: [50, 50] });
+    m.openPopup();
+  });
+  
+  m._s = s;
+  pins.push(m);
+});
+
+function showLanding() {
+  layer.clearLayers();
+  document.getElementById("subtitle").textContent = "Midwest Development Portfolio";
+  document.getElementById("backbtn").classList.remove("show");
+  document.getElementById("legend").classList.remove("show");
+  
+  MARKETS.forEach(market => {
+    const center = MARKET_CENTERS[market];
+    const circle = L.circleMarker([center.lat, center.lon], {
+      radius: 40,
+      fillColor: "#0a3355",
+      color: "#d8272d",
+      weight: 3,
+      opacity: 1,
+      fillOpacity: 0.3
+    });
+    
+    circle.bindPopup(`<div style="color:#333"><div style="font-weight:700;color:#0a3355;font-size:13px">${market}</div><div style="color:#666;font-size:11px">${center.count} sites</div></div>`);
+    circle.on("click", () => { showDetail(market); });
+    layer.addLayer(circle);
+  });
+  
+  const allSiteBounds = L.latLngBounds(SITES.map(s => [s.lat, s.lon]));
+  document.getElementById("backbtn").onclick = function() { showLanding(); };
+  setTimeout(() => {
+    map.fitBounds(allSiteBounds, { padding: [80, 80] });
+  }, 50);
+}
+
+function showDetail(market) {
+  layer.clearLayers();
+  
+  const msites = SITES.filter(s => s.market === market);
+  pins.forEach(p => {
+    if (p._s.market === market) layer.addLayer(p);
+  });
+  
+  document.getElementById("subtitle").textContent = msites.length + " of " + SITES.length + " sites shown";
+  document.getElementById("backbtn").classList.add("show");
+  document.getElementById("legend").classList.add("show");
+  
+  if (msites.length) {
+    const siteBounds = L.latLngBounds(msites.map(s => [s.lat, s.lon]));
+    map.fitBounds(siteBounds, { padding: [50, 50] });
+  }
+}
+
+const legendHTML = LEGEND.map(l => {
+  const count = SITES.filter(s => s.bucket === l.key).length;
+  return `<div class="legend-item"><div class="legend-dot" style="background:${l.color}"></div><span class="legend-label">${l.label} (${count})</span></div>`;
+}).join("");
+document.getElementById("legendbody").innerHTML = legendHTML;
+
+showLanding();
+</script>
+</body></html>"""
+
+with open('index.html', 'w') as f:
+    f.write(html)
+print(f"✓ {len(sites)} sites | {len(skipped)} skipped | Markets: {markets}")
